@@ -65,6 +65,14 @@ class ModelArguments:
     mm_patch_merge_type: Optional[str] = field(default='flat')
     mm_vision_select_feature: Optional[str] = field(default="patch")
 
+    use_token_pruner: bool = field(default=False)
+    use_token_pruner_inference: bool = field(default=False)
+    pruner_num_branches: int = field(default=2)  # 树杈数
+    pruner_max_depth: int = field(default=6)
+    pruner_importance_threshold: float = field(default=0.8)
+    pruner_target_ratio: float = field(default=0.5)
+    tune_token_pruner: bool = field(default=False)
+
 
 @dataclass
 class DataArguments:
@@ -924,6 +932,15 @@ def train(attn_implementation=None):
         model.config.tokenizer_model_max_length = tokenizer.model_max_length
 
         model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
+
+        # 配置token pruner
+        model.config.use_token_pruner = model_args.use_token_pruner
+        model.config.use_token_pruner_inference = model_args.use_token_pruner_inference
+        model.config.pruner_num_branches = model_args.pruner_num_branches
+        model.config.pruner_max_depth = model_args.pruner_max_depth
+        model.config.pruner_importance_threshold = model_args.pruner_importance_threshold
+        model.config.pruner_target_ratio = model_args.pruner_target_ratio
+
         if model_args.tune_mm_mlp_adapter:
             model.requires_grad_(False)
             for p in model.get_model().mm_projector.parameters():

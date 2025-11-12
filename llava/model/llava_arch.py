@@ -20,6 +20,7 @@ import torch.nn as nn
 
 from .multimodal_encoder.builder import build_vision_tower
 from .multimodal_projector.builder import build_vision_projector
+from .token_pruner import build_token_pruner
 
 from llava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
@@ -32,8 +33,11 @@ class LlavaMetaModel:
         super(LlavaMetaModel, self).__init__(config)
 
         if hasattr(config, "mm_vision_tower"):
+            print("==========================Building vision tower================")
             self.vision_tower = build_vision_tower(config, delay_load=True)
             self.mm_projector = build_vision_projector(config)
+            if getattr(config, 'use_token_pruner', False):
+                self.token_pruner = build_token_pruner(config)
 
             if 'unpad' in getattr(config, 'mm_patch_merge_type', ''):
                 self.image_newline = nn.Parameter(
@@ -45,6 +49,9 @@ class LlavaMetaModel:
         if type(vision_tower) is list:
             vision_tower = vision_tower[0]
         return vision_tower
+    
+    def get_token_pruner(self):
+        return self.build_token_pruner
 
     def initialize_vision_modules(self, model_args, fsdp=None):
         vision_tower = model_args.vision_tower
@@ -76,6 +83,11 @@ class LlavaMetaModel:
         self.config.mm_vision_select_feature = mm_vision_select_feature
         self.config.mm_patch_merge_type = mm_patch_merge_type
 
+        if getattr(self, 'token_pruner', None) is None:
+            self.token_pruner = build_token_pruner(self.config)
+            for p in self.token_pruner.parameters():
+                p.requires_grad = True
+
         if getattr(self, 'mm_projector', None) is None:
             self.mm_projector = build_vision_projector(self.config)
 
@@ -95,6 +107,10 @@ class LlavaMetaModel:
                 return {k.split(keyword + '.')[1]: v for k, v in weights.items() if keyword in k}
 
             self.mm_projector.load_state_dict(get_w(mm_projector_weights, 'mm_projector'))
+
+            if hasattr(self, 'token_pruner'):
+                self.token_pruner.load_state_dict(get_w(mm_projector_weights, 'token_pruner'))
+        
 
 
 def unpad_image(tensor, original_size):
@@ -136,10 +152,30 @@ class LlavaMetaForCausalLM(ABC):
 
     def get_vision_tower(self):
         return self.get_model().get_vision_tower()
+    
+    def get_token_pruner(self):
+        return self.get_model().get_token_pruner()
+
+    # def encode_images(self, images):
+    #     image_features = self.get_model().get_vision_tower()(images)
+    #     image_features = self.get_model().mm_projector(image_features)
+    #     return image_features
 
     def encode_images(self, images):
         image_features = self.get_model().get_vision_tower()(images)
         image_features = self.get_model().mm_projector(image_features)
+        
+        # 添加自适应token剪枝
+        if hasattr(self.get_model(), 'token_pruner') and self.get_model().token_pruner is not None:
+            if image_features.dim() == 3:  # [batch, num_tokens, hidden]
+                pruned_features = []
+                for i in range(image_features.shape[0]):
+                    pruned = self.get_model().token_pruner(image_features[i])
+                    pruned_features.append(pruned)
+                return pruned_features
+            else:
+                image_features = self.get_model().token_pruner(image_features)
+        
         return image_features
 
     def prepare_inputs_labels_for_multimodal(
