@@ -36,6 +36,7 @@ class LlavaMetaModel:
             print("==========================Building vision tower================")
             self.vision_tower = build_vision_tower(config, delay_load=True)
             self.mm_projector = build_vision_projector(config)
+            
             if getattr(config, 'use_token_pruner', False):
                 self.token_pruner = build_token_pruner(config)
 
@@ -51,7 +52,7 @@ class LlavaMetaModel:
         return vision_tower
     
     def get_token_pruner(self):
-        return self.build_token_pruner
+        return self.token_pruner
 
     def initialize_vision_modules(self, model_args, fsdp=None):
         vision_tower = model_args.vision_tower
@@ -83,14 +84,8 @@ class LlavaMetaModel:
         self.config.mm_vision_select_feature = mm_vision_select_feature
         self.config.mm_patch_merge_type = mm_patch_merge_type
 
-        if getattr(self, 'token_pruner', None) is None:
-            self.token_pruner = build_token_pruner(self.config)
-            for p in self.token_pruner.parameters():
-                p.requires_grad = True
-
         if getattr(self, 'mm_projector', None) is None:
             self.mm_projector = build_vision_projector(self.config)
-
             if 'unpad' in mm_patch_merge_type:
                 embed_std = 1 / torch.sqrt(torch.tensor(self.config.hidden_size, dtype=self.dtype))
                 self.image_newline = nn.Parameter(
@@ -100,6 +95,22 @@ class LlavaMetaModel:
             # In case it is frozen by LoRA
             for p in self.mm_projector.parameters():
                 p.requires_grad = True
+
+        use_token_pruner = getattr(model_args, 'use_token_pruner', False)
+        if use_token_pruner:
+
+            # 配置token pruner
+            self.config.use_token_pruner = True
+            self.config.use_token_pruner_inference = getattr(model_args, 'use_token_pruner_inference', False)
+            self.config.pruner_num_branches = getattr(model_args, 'pruner_num_branches', 2)
+            self.config.pruner_max_depth = getattr(model_args, 'pruner_max_depth', 6)
+            self.config.pruner_importance_threshold = getattr(model_args, 'pruner_importance_threshold', 0.8)
+            self.config.pruner_target_ratio = getattr(model_args, 'pruner_target_ratio', 0.5)    
+
+            if getattr(self, 'token_pruner', None) is None:
+                self.token_pruner = build_token_pruner(self.config)
+                for p in self.token_pruner.parameters():
+                    p.requires_grad = True
 
         if pretrain_mm_mlp_adapter is not None:
             mm_projector_weights = torch.load(pretrain_mm_mlp_adapter, map_location='cpu')
@@ -111,7 +122,6 @@ class LlavaMetaModel:
             if hasattr(self, 'token_pruner'):
                 self.token_pruner.load_state_dict(get_w(mm_projector_weights, 'token_pruner'))
         
-
 
 def unpad_image(tensor, original_size):
     """

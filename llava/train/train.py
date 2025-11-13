@@ -177,7 +177,7 @@ def get_mm_adapter_state_maybe_zero_3(named_params, keys_to_match):
 def find_all_linear_names(model):
     cls = torch.nn.Linear
     lora_module_names = set()
-    multimodal_keywords = ['mm_projector', 'vision_tower', 'vision_resampler']
+    multimodal_keywords = ['mm_projector', 'vision_tower', 'vision_resampler', 'token_pruner']
     for name, module in model.named_modules():
         if any(mm_keyword in name for mm_keyword in multimodal_keywords):
             continue
@@ -197,6 +197,10 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
     if getattr(trainer.args, "tune_mm_mlp_adapter", False):
         # Only save Adapter
         keys_to_match = ['mm_projector']
+
+        if getattr(trainer.model.config, 'use_token_pruner', False):
+            keys_to_match.append('token_pruner')
+            
         if getattr(trainer.args, "use_im_start_end", False):
             keys_to_match.extend(['embed_tokens', 'embed_in'])
 
@@ -933,13 +937,12 @@ def train(attn_implementation=None):
 
         model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
 
-        # 配置token pruner
-        model.config.use_token_pruner = model_args.use_token_pruner
-        model.config.use_token_pruner_inference = model_args.use_token_pruner_inference
-        model.config.pruner_num_branches = model_args.pruner_num_branches
-        model.config.pruner_max_depth = model_args.pruner_max_depth
-        model.config.pruner_importance_threshold = model_args.pruner_importance_threshold
-        model.config.pruner_target_ratio = model_args.pruner_target_ratio
+        if hasattr(model.get_model(), 'token_pruner') and model.get_model().token_pruner is not None:
+            # 移动到正确的设备和数据类型
+            model.get_model().token_pruner.to(
+                dtype=torch.bfloat16 if training_args.bf16 else torch.float16,
+                device=training_args.device
+            )
 
         if model_args.tune_mm_mlp_adapter:
             model.requires_grad_(False)

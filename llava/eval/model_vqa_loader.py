@@ -83,6 +83,45 @@ def eval_model(args):
     model_name = get_model_name_from_path(model_path)
     tokenizer, model, image_processor, context_len = load_pretrained_model(model_path, args.model_base, model_name)
 
+    if args.use_token_pruner:
+        print("=" * 50)
+        print("Configuring Token Pruner for Inference")
+        print("=" * 50)
+        
+        # 1️⃣ 先设置所有 config 参数
+        model.config.use_token_pruner = True
+        model.config.use_token_pruner_inference = args.use_token_pruner_inference
+        model.config.pruner_num_branches = args.pruner_num_branches
+        model.config.pruner_max_depth = args.pruner_max_depth
+        model.config.pruner_importance_threshold = args.pruner_importance_threshold
+        model.config.pruner_target_ratio = args.pruner_target_ratio
+        model.config.pruner_verbose = args.pruner_verbose
+        
+        # 2️⃣ 检查并初始化 token_pruner（关键！）
+        if not hasattr(model.get_model(), 'token_pruner') or model.get_model().token_pruner is None:
+            from llava.model.token_pruner import build_token_pruner
+            model.get_model().token_pruner = build_token_pruner(model.config)
+            print("✓ Token pruner initialized from scratch")
+        else:
+            # 如果已存在，更新 verbose 设置
+            model.get_model().token_pruner.verbose = args.pruner_verbose
+            print("✓ Token pruner already exists, updated settings")
+        
+        # 3️⃣ 验证 pruner 是否正确初始化
+        if model.get_model().token_pruner is not None:
+            print(f"✓ Token pruner verification:")
+            print(f"  - Type: {type(model.get_model().token_pruner)}")
+            print(f"  - Branches: {model.get_model().token_pruner.num_branches}")
+            print(f"  - Max Depth: {model.get_model().token_pruner.max_depth}")
+            print(f"  - Target Ratio: {model.get_model().token_pruner.target_token_ratio}")
+            print(f"  - Verbose: {model.get_model().token_pruner.verbose}")
+        else:
+            print("❌ ERROR: Token pruner is still None!")
+        
+        print("=" * 50)
+    else:
+        print("Token pruner disabled")
+
     questions = [json.loads(q) for q in open(os.path.expanduser(args.question_file), "r")]
     questions = get_chunk(questions, args.num_chunks, args.chunk_idx)
     answers_file = os.path.expanduser(args.answers_file)
@@ -139,6 +178,22 @@ if __name__ == "__main__":
     parser.add_argument("--top_p", type=float, default=None)
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=128)
+
+
+    parser.add_argument("--use_token_pruner", type=lambda x: x.lower() == 'true', default=False,
+                        help="Enable token pruner")
+    parser.add_argument("--use_token_pruner_inference", type=lambda x: x.lower() == 'true', default=True,
+                        help="Use token pruner during inference")
+    parser.add_argument("--pruner_num_branches", type=int, default=2,
+                        help="Number of branches in tree split")
+    parser.add_argument("--pruner_max_depth", type=int, default=6,
+                        help="Maximum depth of tree split")
+    parser.add_argument("--pruner_importance_threshold", type=float, default=0.8,
+                        help="Importance threshold for stopping split")
+    parser.add_argument("--pruner_target_ratio", type=float, default=0.5,
+                        help="Target token retention ratio")
+    parser.add_argument("--pruner_verbose", type=lambda x: x.lower() == 'true', default=False)
+    
     args = parser.parse_args()
 
     eval_model(args)
